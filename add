@@ -1,0 +1,509 @@
+<?php
+session_start();
+require 'config.php';
+
+// Vérification de l'authentification
+if (!isset($_SESSION['admin_logged_in'])) {
+    header('Location: admin_login.php');
+    exit;
+}
+
+// Récupérer le rôle de l'admin
+$admin_id = $_SESSION['admin_id'];
+$admin_role = $_SESSION['admin_role'];
+
+// Gestion des actions
+$action = $_GET['action'] ?? '';
+$product_id = $_GET['id'] ?? 0;
+
+// Suppression d'un produit
+if ($action === 'delete' && $product_id) {
+    // Vérifier si le produit existe
+    $stmt = $conn->prepare("SELECT id FROM products WHERE id = ?");
+    $stmt->bind_param("i", $product_id);
+    $stmt->execute();
+    $stmt->store_result();
+    
+    if ($stmt->num_rows > 0) {
+        // Supprimer le produit
+        $delete_stmt = $conn->prepare("DELETE FROM products WHERE id = ?");
+        $delete_stmt->bind_param("i", $product_id);
+        if ($delete_stmt->execute()) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => 'Produit supprimé avec succès'];
+        } else {
+            $_SESSION['message'] = ['type' => 'danger', 'text' => 'Erreur lors de la suppression'];
+        }
+    } else {
+        $_SESSION['message'] = ['type' => 'warning', 'text' => 'Produit introuvable'];
+    }
+    
+    header('Location: admin_products.php');
+    exit;
+}
+
+// Mise à jour du statut
+if ($action === 'update_status' && $product_id) {
+    $new_status = $_GET['status'] ?? '';
+    if (in_array($new_status, ['published', 'pending', 'rejected'])) {
+        $stmt = $conn->prepare("UPDATE products SET status = ? WHERE id = ?");
+        $stmt->bind_param("si", $new_status, $product_id);
+        if ($stmt->execute()) {
+            $_SESSION['message'] = ['type' => 'success', 'text' => 'Statut mis à jour'];
+        } else {
+            $_SESSION['message'] = ['type' => 'danger', 'text' => 'Erreur lors de la mise à jour'];
+        }
+    }
+    
+    header('Location: admin_products.php');
+    exit;
+}
+
+// Récupération des produits avec pagination et filtres
+$search = $_GET['search'] ?? '';
+$status_filter = $_GET['status'] ?? '';
+$category_filter = $_GET['category'] ?? '';
+$page = max(1, $_GET['page'] ?? 1);
+$per_page = 10;
+$offset = ($page - 1) * $per_page;
+
+// Construction de la requête avec filtres
+$query = "SELECT SQL_CALC_FOUND_ROWS * FROM products WHERE 1=1";
+$params = [];
+$types = '';
+
+if (!empty($search)) {
+    $query .= " AND (title LIKE ? OR description LIKE ?)";
+    $search_term = "%$search%";
+    $params[] = $search_term;
+    $params[] = $search_term;
+    $types .= 'ss';
+}
+
+if (!empty($status_filter)) {
+    $query .= " AND status = ?";
+    $params[] = $status_filter;
+    $types .= 's';
+}
+
+if (!empty($category_filter)) {
+    $query .= " AND category = ?";
+    $params[] = $category_filter;
+    $types .= 's';
+}
+
+$query .= " ORDER BY date_added DESC LIMIT ? OFFSET ?";
+$params[] = $per_page;
+$params[] = $offset;
+$types .= 'ii';
+
+$stmt = $conn->prepare($query);
+if ($types) {
+    $stmt->bind_param($types, ...$params);
+}
+$stmt->execute();
+$result = $stmt->get_result();
+$products = $result->fetch_all(MYSQLI_ASSOC);
+
+// Récupérer le nombre total de produits (pour la pagination)
+$total_result = $conn->query("SELECT FOUND_ROWS() as total");
+$total = $total_result->fetch_assoc()['total'];
+$total_pages = ceil($total / $per_page);
+
+// Récupérer les catégories distinctes pour le filtre
+$categories = $conn->query("SELECT DISTINCT category FROM products ORDER BY category")->fetch_all(MYSQLI_ASSOC);
+?>
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestion des Produits - OUEST DEAL</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.datatables.net/1.11.5/css/dataTables.bootstrap5.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary: #FF6B00;
+            --secondary: #2b77e7;
+            --dark: #212529;
+            --light: #f8f9fa;
+        }
+        body {
+            background-color: #f5f5f5;
+        }
+        .admin-sidebar {
+            background-color: var(--dark);
+            color: white;
+            min-height: 100vh;
+            position: fixed;
+            width: 250px;
+        }
+        .admin-main {
+            margin-left: 250px;
+            padding: 20px;
+        }
+        .sidebar-brand {
+            padding: 1.5rem 1rem;
+            font-size: 1.2rem;
+            font-weight: bold;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        .sidebar-nav {
+            padding: 0;
+            list-style: none;
+        }
+        .sidebar-nav li a {
+            color: rgba(255,255,255,0.8);
+            padding: 0.75rem 1rem;
+            display: block;
+            text-decoration: none;
+            transition: all 0.3s;
+        }
+        .sidebar-nav li a:hover, .sidebar-nav li a.active {
+            color: white;
+            background-color: rgba(255,255,255,0.1);
+        }
+        .sidebar-nav li a i {
+            margin-right: 0.5rem;
+            width: 20px;
+            text-align: center;
+        }
+        .table-responsive {
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 1rem;
+        }
+        .badge-pending {
+            background-color: #ffc107;
+            color: var(--dark);
+        }
+        .badge-published {
+            background-color: #28a745;
+        }
+        .badge-rejected {
+            background-color: #dc3545;
+        }
+        .admin-header {
+            background-color: white;
+            padding: 1rem;
+            border-radius: 10px;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .admin-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+        }
+        .product-image-thumb {
+            width: 60px;
+            height: 60px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .filter-card {
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .pagination .page-item.active .page-link {
+            background-color: var(--primary);
+            border-color: var(--primary);
+        }
+        .pagination .page-link {
+            color: var(--primary);
+        }
+        .status-select {
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .status-select:hover {
+            transform: scale(1.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="admin-sidebar">
+        <div class="sidebar-brand">
+            <i class="fas fa-cog"></i> OUEST DEAL Admin
+        </div>
+        <ul class="sidebar-nav">
+            <li><a href="admin.php"><i class="fas fa-tachometer-alt"></i> Tableau de bord</a></li>
+            <li><a href="admin_products.php" class="active"><i class="fas fa-box-open"></i> Produits</a></li>
+            <li><a href="admin_requests.php"><i class="fas fa-clipboard-list"></i> Demandes</a></li>
+            <?php if ($admin_role === 'superadmin'): ?>
+                <li><a href="admin_users.php"><i class="fas fa-users"></i> Administrateurs</a></li>
+                <li><a href="admin_settings.php"><i class="fas fa-cog"></i> Paramètres</a></li>
+            <?php endif; ?>
+            <li><a href="admin_logout.php"><i class="fas fa-sign-out-alt"></i> Déconnexion</a></li>
+        </ul>
+    </div>
+
+    <div class="admin-main">
+        <div class="admin-header">
+            <h4>Gestion des Produits</h4>
+            <div class="d-flex align-items-center">
+                <span class="me-2"><?= htmlspecialchars($_SESSION['admin_name']) ?></span>
+                <div class="admin-avatar">
+                    <?= strtoupper(substr($_SESSION['admin_name'], 0, 1)) ?>
+                </div>
+            </div>
+        </div>
+
+        <!-- Affichage des messages -->
+        <?php if (isset($_SESSION['message'])): ?>
+            <div class="alert alert-<?= $_SESSION['message']['type'] ?> alert-dismissible fade show" role="alert">
+                <?= $_SESSION['message']['text'] ?>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+            <?php unset($_SESSION['message']); ?>
+        <?php endif; ?>
+
+        <div class="filter-card">
+            <form method="get" action="admin_products.php" class="row g-3">
+                <div class="col-md-4">
+                    <label for="search" class="form-label">Recherche</label>
+                    <input type="text" class="form-control" id="search" name="search" placeholder="Titre ou description..." value="<?= htmlspecialchars($search) ?>">
+                </div>
+                <div class="col-md-3">
+                    <label for="status" class="form-label">Statut</label>
+                    <select class="form-select" id="status" name="status">
+                        <option value="">Tous les statuts</option>
+                        <option value="published" <?= $status_filter === 'published' ? 'selected' : '' ?>>Publié</option>
+                        <option value="pending" <?= $status_filter === 'pending' ? 'selected' : '' ?>>En attente</option>
+                        <option value="rejected" <?= $status_filter === 'rejected' ? 'selected' : '' ?>>Rejeté</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label for="category" class="form-label">Catégorie</label>
+                    <select class="form-select" id="category" name="category">
+                        <option value="">Toutes catégories</option>
+                        <?php foreach ($categories as $category): ?>
+                            <option value="<?= htmlspecialchars($category['category']) ?>" <?= $category_filter === $category['category'] ? 'selected' : '' ?>>
+                                <?= htmlspecialchars($category['category']) ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="col-md-2 d-flex align-items-end">
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="fas fa-filter"></i> Filtrer
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h5>Liste des produits</h5>
+            <a href="admin_add_product.php" class="btn btn-primary">
+                <i class="fas fa-plus"></i> Ajouter un produit
+            </a>
+        </div>
+
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Image</th>
+                        <th>Titre</th>
+                        <th>Prix</th>
+                        <th>Catégorie</th>
+                        <th>Statut</th>
+                        <th>Date</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php foreach ($products as $product): ?>
+                    <tr>
+                        <td><?= $product['id'] ?></td>
+                        <td>
+                            <img src="<?= htmlspecialchars($product['image']) ?>" alt="<?= htmlspecialchars($product['title']) ?>" class="product-image-thumb">
+                        </td>
+                        <td>
+                            <strong><?= htmlspecialchars($product['title']) ?></strong>
+                            <?php if ($product['is_featured']): ?>
+                                <span class="badge bg-warning text-dark ms-2">Featured</span>
+                            <?php endif; ?>
+                        <td><?= number_format($product['price'], 2, ',', ' ') ?> €</td>
+                        <td><?= htmlspecialchars($product['category']) ?></td>
+                        <td>
+                            <div class="dropdown">
+                                <span class="badge rounded-pill <?= 
+                                    $product['status'] === 'published' ? 'bg-success' : 
+                                    ($product['status'] === 'pending' ? 'bg-warning text-dark' : 'bg-danger')
+                                ?> dropdown-toggle status-select" id="statusDropdown<?= $product['id'] ?>" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <?= ucfirst($product['status']) ?>
+                                </span>
+                                <ul class="dropdown-menu" aria-labelledby="statusDropdown<?= $product['id'] ?>">
+                                    <li><a class="dropdown-item" href="admin_products.php?action=update_status&id=<?= $product['id'] ?>&status=published">Publié</a></li>
+                                    <li><a class="dropdown-item" href="admin_products.php?action=update_status&id=<?= $product['id'] ?>&status=pending">En attente</a></li>
+                                    <li><a class="dropdown-item" href="admin_products.php?action=update_status&id=<?= $product['id'] ?>&status=rejected">Rejeté</a></li>
+                                </ul>
+                            </div>
+                        </td>
+                        <td><?= date('d/m/Y', strtotime($product['date_added'])) ?></td>
+                        <td>
+                            <div class="btn-group" role="group">
+                                <a href="admin_edit_product.php?id=<?= $product['id'] ?>" class="btn btn-sm btn-primary" title="Modifier">
+                                    <i class="fas fa-edit"></i>
+                                </a>
+                                <a href="admin_view_product.php?id=<?= $product['id'] ?>" class="btn btn-sm btn-info" title="Voir">
+                                    <i class="fas fa-eye"></i>
+                                </a>
+                                <button type="button" class="btn btn-sm btn-danger" title="Supprimer" data-bs-toggle="modal" data-bs-target="#deleteModal<?= $product['id'] ?>">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
+                            </div>
+
+                            <!-- Modal de confirmation de suppression -->
+                            <div class="modal fade" id="deleteModal<?= $product['id'] ?>" tabindex="-1" aria-labelledby="deleteModalLabel<?= $product['id'] ?>" aria-hidden="true">
+                                <div class="modal-dialog">
+                                    <div class="modal-content">
+                                        <div class="modal-header">
+                                            <h5 class="modal-title" id="deleteModalLabel<?= $product['id'] ?>">Confirmer la suppression</h5>
+                                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                                        </div>
+                                        <div class="modal-body">
+                                            Êtes-vous sûr de vouloir supprimer le produit "<?= htmlspecialchars($product['title']) ?>" ? Cette action est irréversible.
+                                        </div>
+                                        <div class="modal-footer">
+                                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Annuler</button>
+                                            <a href="admin_products.php?action=delete&id=<?= $product['id'] ?>" class="btn btn-danger">Supprimer</a>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php if (empty($products)): ?>
+                    <tr>
+                        <td colspan="8" class="text-center">Aucun produit trouvé</td>
+                    </tr>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+
+            <!-- Pagination -->
+            <?php if ($total_pages > 1): ?>
+            <nav aria-label="Page navigation">
+                <ul class="pagination justify-content-center">
+                    <li class="page-item <?= $page <= 1 ? 'disabled' : '' ?>">
+                        <a class="page-link" href="admin_products.php?page=<?= $page-1 ?>&search=<?= urlencode($search) ?>&status=<?= urlencode($status_filter) ?>&category=<?= urlencode($category_filter) ?>" aria-label="Previous">
+                            <span aria-hidden="true">&laquo;</span>
+                        </a>
+                    </li>
+                    
+                    <?php for ($i = 1; $i <= $total_pages; $i++): ?>
+                        <li class="page-item <?= $i == $page ? 'active' : '' ?>">
+                            <a class="page-link" href="admin_products.php?page=<?= $i ?>&search=<?= urlencode($search) ?>&status=<?= urlencode($status_filter) ?>&category=<?= urlencode($category_filter) ?>"><?= $i ?></a>
+                        </li>
+                    <?php endfor; ?>
+                    
+                    <li class="page-item <?= $page >= $total_pages ? 'disabled' : '' ?>">
+                        <a class="page-link" href="admin_products.php?page=<?= $page+1 ?>&search=<?= urlencode($search) ?>&status=<?= urlencode($status_filter) ?>&category=<?= urlencode($category_filter) ?>" aria-label="Next">
+                            <span aria-hidden="true">&raquo;</span>
+                        </a>
+                    </li>
+                </ul>
+            </nav>
+            <?php endif; ?>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.4.1/js/dataTables.buttons.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.bootstrap5.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.html5.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.print.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.colVis.min.js"></script>
+    <script>
+        $(document).ready(function() {
+            // Initialisation de DataTable avec options avancées
+            var table = $('#productsTable').DataTable({
+                language: {
+                    url: '//cdn.datatables.net/plug-ins/1.13.6/i18n/fr-FR.json'
+                },
+                dom: "<'row'<'col-sm-12 col-md-6'l><'col-sm-12 col-md-6'f>>" +
+                     "<'row'<'col-sm-12'tr>>" +
+                     "<'row'<'col-sm-12 col-md-5'i><'col-sm-12 col-md-7'p>>",
+                buttons: [
+                    {
+                        extend: 'copy',
+                        className: 'btn btn-secondary',
+                        text: '<i class="fas fa-copy"></i> Copier'
+                    },
+                    {
+                        extend: 'excel',
+                        className: 'btn btn-success',
+                        text: '<i class="fas fa-file-excel"></i> Excel'
+                    },
+                    {
+                        extend: 'pdf',
+                        className: 'btn btn-danger',
+                        text: '<i class="fas fa-file-pdf"></i> PDF'
+                    },
+                    {
+                        extend: 'print',
+                        className: 'btn btn-info',
+                        text: '<i class="fas fa-print"></i> Imprimer'
+                    },
+                    {
+                        extend: 'colvis',
+                        className: 'btn btn-primary',
+                        text: '<i class="fas fa-eye"></i> Colonnes'
+                    }
+                ],
+                responsive: true,
+                pageLength: 25,
+                lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "Tous"]],
+                order: [[0, 'desc']],
+                columnDefs: [
+                    { responsivePriority: 1, targets: 1 },
+                    { responsivePriority: 2, targets: 2 },
+                    { responsivePriority: 3, targets: -1 },
+                    { orderable: false, targets: [1, -1] }
+                ],
+                initComplete: function() {
+                    $('.dt-buttons').addClass('btn-group');
+                    $('.dt-button').removeClass('dt-button');
+                }
+            });
+
+            // Intégration des boutons dans le DOM
+            table.buttons().container()
+                .appendTo('#productsTable_wrapper .col-md-6:eq(0)');
+
+            // Tooltips
+            $('[data-bs-toggle="tooltip"]').tooltip({
+                trigger: 'hover',
+                placement: 'top'
+            });
+
+            // Gestion des messages flash
+            if ($('.alert').length) {
+                setTimeout(function() {
+                    $('.alert').fadeOut();
+                }, 5000);
+            }
+        });
+    </script>
+</body>
+</html>
