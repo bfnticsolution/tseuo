@@ -1,15 +1,13 @@
 <?php
-$servername = "localhost"; // Remplacez par le nom de votre serveur si nécessaire
-$username = "root"; // Remplacez par votre nom d'utilisateur MySQL
-$password = "6722Le@-"; // Remplacez par votre mot de passe MySQL
-$dbname = "ouest_deal"; // Le nom de votre base de données
+$host = 'sql100.infinityfree.com';
+$username = 'if0_39369296';
+$password = '67222863L'; // remplacez par votre mot de passe réel
+$database = 'if0_39369296_deal'; // remplacez XXX par le nom réel de la base
 
-// Créer une connexion
-$conn = new mysqli($servername, $username, $password, $dbname);
+$conn = new mysqli($host, $username, $password, $database);
 
-// Vérifier la connexion
+// Vérification de la connexion
 if ($conn->connect_error) {
-    die("La connexion a échoué: " . $conn->connect_error);
+    die("Erreur de connexion : " . $conn->connect_error);
 }
-
 ?>
