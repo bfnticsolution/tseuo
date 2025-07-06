@@ -1,10 +1,9 @@
 <?php
-$host = 'sql100.infinityfree.com';
-$username = 'if0_39369296';
-$password = '67222863L'; // remplacez par votre mot de passe réel
-$database = 'if0_39369296_deal'; // remplacez XXX par le nom réel de la base
+// Inclure les variables de l'environnement
+include_once '.env.php';
 
-$conn = new mysqli($host, $username, $password, $database);
+// Connexion à la base de données avec mysqli
+$conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
 
 // Vérification de la connexion
 if ($conn->connect_error) {
