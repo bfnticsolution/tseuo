@@ -2,5 +2,5 @@ services:
   - type: web
     name: tseuo
     env: docker
-    plan: free
     dockerfilePath: Dockerfile
+    plan: free
